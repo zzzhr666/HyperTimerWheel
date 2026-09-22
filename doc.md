@@ -18,7 +18,7 @@ HyperTimerWheel 面向游戏服务器中大量短期和中长期定时任务的�
 2. 让时间推进适配游戏服务器自己的 tick；
 3. 将业务 goroutine 的提交与时间轮内部修改解耦；
 4. 让桶的底层实现可以替换；
-5. 为后续性能 benchmark 和生产化完善保留空间。
+5. 为后续性能优化和生产化完善保留空间。
 
 ## 2. 整体结构
 
@@ -211,7 +211,8 @@ Wheel 和 Level 只依赖这些操作，不关心桶的具体存储方式。
 SlotTypeSlice
 ```
 
-`SlotTypeLinkedList` 目前只是预留扩展点，选择它会返回 `ErrUnsupportedSlot`，并不代表链表实现已经完成。
+当前支持 `SlotTypeSlice` 和 `SlotTypeLinkedList` 两种实现。两者遵循相同的
+Slot 语义，Wheel 和 Level 不依赖具体的底层存储方式。
 
 ## 7. Slice + Generation Slot
 
@@ -285,7 +286,9 @@ continue
 - 在桶被取出前可能暂时占用更多内存；
 - generation map 有额外的哈希表开销。
 
-后续实现链表版本时，应使用相同的 slot 语义，再进行公平 benchmark。
+linked-list slot 使用通用双向链表和 timer 到 iterator 的索引，Reset/Invalidate
+可以直接摘除旧节点；它减少 stale entry 扫描，但会带来节点和 map 的额外开销。
+两种实现已经有一致性测试，并通过 benchmark 进行对比。
 
 ## 8. Timer 生命周期
 
@@ -454,14 +457,53 @@ w.Close()
 当前实现还存在以下限制：
 
 1. `Advance` 需要由单个 goroutine 调用；
-2. command channel 满时，Schedule/Reset 可能阻塞；
+2. command channel 满时，Schedule/Reset 会立即返回失败；
 3. callback panic 处理策略尚未定义；
 4. WorkerPool 的配置和 Wheel 生命周期仍可继续完善；
-5. linked-list slot 尚未实现；
-6. cascade 尚未做分批迁移和预算控制；
-7. 尚未完成 slice 与链表实现的系统 benchmark。
+5. cascade 尚未做分批迁移和预算控制；
+6. benchmark 当前主要使用空 callback，尚未覆盖完整业务链路。
 
-## 13. 后续路线
+## 13. Benchmark
+
+Benchmark 位于 `benchmark/benchmark.go`，当前包含 Schedule、Reset、Cancel、
+普通 Advance、同桶集中到期、长延迟 cascade 和 tick 延迟分布等场景，并同时
+比较 slice + generation 与 linked-list 两种 Slot。
+
+测试环境：
+
+```text
+Ubuntu 22.04.5 LTS on WSL2
+Linux 6.18.33.2-microsoft-standard-WSL2
+Go 1.26.5 linux/amd64
+16 logical cores
+```
+
+在 2,000 个 timer、`BaseTick=1ms`、`MaxDelay=1s`、`SlotsPerLevel=64`
+的技能 CD 近似配置下，每组独立运行 20 次。slice + generation 的均值为：
+
+```text
+Schedule + Apply:       351.66 ns/op
+Reset + Apply:           139.64 ns/op
+分布式 Advance:          125.18 ns/op
+同一桶集中 Advance:       65.18 ns/op
+长延迟 cascade:          146.39 ns/op
+tick p50 / p95 / p99:   178.30 / 296.60 / 5150.15 ns
+```
+
+容量阶梯测试中，1ms tick、1s 最大延迟、64 slots 配置下，slice + generation
+每组运行 20 次的均值如下：
+
+```text
+10,000 timers:   distributed 1.22ms, same-bucket 0.73ms, reset 1.40ms
+50,000 timers:   distributed 7.44ms, same-bucket 4.82ms, reset 9.21ms
+100,000 timers:  distributed 20.60ms, same-bucket 13.33ms, reset 25.98ms
+```
+
+这些测试使用空 callback，只衡量时间轮调度成本。实际游戏服务器还需要把
+callback、网络发送、玩家状态更新、锁竞争和 GC 纳入完整压测。时间轮容量的
+关键指标是单个 tick 内到期和 cascade 的 timer 数量，而不是仅仅看总 timer 数。
+
+## 14. 后续路线
 
 建议按照以下顺序继续：
 
@@ -473,12 +515,12 @@ w.Close()
     └── 补充错误和生命周期文档
 
 第二阶段：底层实现
-    ├── 实现 linked-list slot
-    ├── 补充两个 slot 实现的行为一致性测试
-    └── 编写 Add / Reset / TakeAll benchmark
+    ├── 维护 linked-list slot
+    ├── 维护两个 slot 实现的行为一致性测试
+    └── 持续补充 Add / Reset / TakeAll benchmark
 
 第三阶段：性能优化
-    ├── 测量 cascade 峰值
+    ├── 已完成基础 cascade 和容量 benchmark
     ├── 评估分批 cascade
     ├── 优化 map 和内存复用
     └── 分析 callback 提交和 WorkerPool 背压
