@@ -71,7 +71,8 @@ for {
 | `Advance`  | 推进逻辑时间并触发到期 timer           |
 | `Close`    | 停止时间轮并等待 worker pool 中的任务结束 |
 
-注意：`Advance` 应由一个固定的服务器 tick goroutine 调用。`Schedule`、`Reset` 和 `Cancel` 可以由业务 goroutine 调用。
+注意：`Advance` 应由一个固定的服务器 tick goroutine 调用。`Schedule`、`Reset` 和 `Cancel` 可以由业务 goroutine 调用。调用
+`Close` 前，应先停止新的 `Schedule`/`Reset` 提交并等待提交 goroutine 结束。
 
 ## 🧱 架构设计
 

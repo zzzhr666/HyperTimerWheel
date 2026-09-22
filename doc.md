@@ -355,6 +355,21 @@ Advance
 
 当前不建议多个 goroutine 同时调用 `Advance`，因为时间轮内部结构不是多写者并发结构。
 
+当前的生命周期约定是：`Schedule`、`Reset` 和 `Cancel` 可以由业务 goroutine 并发调用，但调用 `Close` 前，业务层必须先停止新的
+`Schedule`/`Reset` 提交，并等待已经运行的提交 goroutine 完成。`Close` 与提交操作同时发生不属于当前保证的使用场景。
+
+推荐的关闭顺序：
+
+```text
+停止业务生产者
+    │
+    ▼
+等待生产者 goroutine 退出
+    │
+    ▼
+调用 Wheel.Close
+```
+
 ### 9.1 Command channel
 
 Schedule 和 Reset 不直接改动 Wheel 内部，而是提交 command：
@@ -371,13 +386,16 @@ delay time.Duration
 
 这样可以把复杂的 map、level、slot 修改集中到单一推进线程中，避免在核心路径加锁。
 
-当前 command channel 是有容量的 channel。容量耗尽时，提交方会阻塞。后续可以根据服务器需求选择：
+当前 command channel 是有容量的 channel。容量耗尽时，当前实现会立即返回失败，不会阻塞提交方。后续可以根据服务器需求选择：
 
 - 返回队列满错误；
 - 扩大容量；
 - 批量提交；
 - 增加外部 MPSC 队列；
 - 设计明确的背压策略。
+
+当前实现使用非阻塞发送：队列满时，`Schedule` 返回 `ErrCommandQueueFull`，`Reset` 返回 `false`。`CommandCapacity` 未配置或小于等于
+0 时，会回退到 `DefaultCommandsCapacity`。
 
 ## 10. Callback 和 WorkerPool
 
