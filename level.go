@@ -1,6 +1,12 @@
 package timerwheel
 
-import "time"
+import (
+	"time"
+
+	slotpkg "HyperTimerWheel/slot"
+)
+
+type slot = slotpkg.Slot
 
 type level struct {
 	tick             time.Duration
@@ -32,12 +38,12 @@ func (l *level) advance() bool {
 }
 
 func (l *level) takeCurrent() []*timer {
-	return l.slots[l.currentIndex].takeAll()
+	return l.slots[l.currentIndex].TakeAll()
 }
 
 func (l *level) addCurrent(t *timer) slot {
 	current := l.slots[l.currentIndex]
-	current.add(t)
+	current.Add(t)
 	return current
 }
 
@@ -60,6 +66,6 @@ func (l *level) addAfter(t *timer, remaining time.Duration) (slot, bool) {
 
 	position := (l.currentIndex + int(ticks)) % len(l.slots)
 	target := l.slots[position]
-	target.add(t)
+	target.Add(t)
 	return target, true
 }

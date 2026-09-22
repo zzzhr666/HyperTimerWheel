@@ -15,15 +15,6 @@ var (
 
 const DefaultCommandsCapacity = 65536
 
-type SlotType uint8
-
-const (
-	SlotTypeSlice SlotType = iota
-	// SlotTypeLinkedList is reserved for the linked-list implementation.
-	// It is intentionally not implemented yet.
-	SlotTypeLinkedList
-)
-
 type WheelState = uint32
 
 const (
@@ -116,8 +107,8 @@ func (w *Wheel) Schedule(delay time.Duration, callback Callback) (Handle, error)
 
 	id := w.nextTimerID.Add(1)
 	t := &timer{
-		id: timerID(id),
-		cb: callback,
+		ID:       timerID(id),
+		Callback: callback,
 	}
 
 	select {
@@ -126,7 +117,7 @@ func (w *Wheel) Schedule(delay time.Duration, callback Callback) (Handle, error)
 		t:     t,
 		delay: delay,
 	}:
-		return Handle{id: t.id, t: t}, nil
+		return Handle{id: t.ID, t: t}, nil
 	default:
 		return Handle{id: InvalidTimerID}, ErrCommandQueueFull
 	}
@@ -140,7 +131,7 @@ func (w *Wheel) Cancel(h Handle) bool {
 		return false
 	}
 
-	return h.t.state.CompareAndSwap(timerActive, timerCanceled)
+	return h.t.State.CompareAndSwap(timerActive, timerCanceled)
 }
 
 func (w *Wheel) Advance(now time.Time) int {
@@ -174,7 +165,7 @@ func (w *Wheel) Reset(h Handle, newDelay time.Duration) bool {
 	if newDelay <= 0 || newDelay >= w.maxDelay {
 		return false
 	}
-	if h.t.state.Load() != timerActive {
+	if h.t.State.Load() != timerActive {
 		return false
 	}
 
@@ -206,17 +197,17 @@ func (w *Wheel) fireLowestLevelCurrentSlot() int {
 	now := w.lastTime
 
 	for _, t := range pendingTasks {
-		if !t.state.CompareAndSwap(timerActive, timerFired) {
-			delete(w.timers, t.id)
-			delete(w.locations, t.id)
+		if !t.State.CompareAndSwap(timerActive, timerFired) {
+			delete(w.timers, t.ID)
+			delete(w.locations, t.ID)
 			continue
 		}
 
-		delete(w.timers, t.id)
-		delete(w.locations, t.id)
+		delete(w.timers, t.ID)
+		delete(w.locations, t.ID)
 
 		task := func() {
-			t.cb(now)
+			t.Callback(now)
 		}
 		if w.workerPool == nil || !w.workerPool.Submit(task) {
 			task()
@@ -244,15 +235,15 @@ func (w *Wheel) cascade(k int) {
 	pendingTasks := l.takeCurrent()
 
 	for _, t := range pendingTasks {
-		if t.state.Load() != timerActive {
-			delete(w.timers, t.id)
-			delete(w.locations, t.id)
+		if t.State.Load() != timerActive {
+			delete(w.timers, t.ID)
+			delete(w.locations, t.ID)
 			continue
 		}
 
-		remaining := t.deadline.Sub(w.lastTime)
+		remaining := t.Deadline.Sub(w.lastTime)
 		if remaining <= 0 {
-			w.locations[t.id] = w.levels[0].addCurrent(t)
+			w.locations[t.ID] = w.levels[0].addCurrent(t)
 		} else {
 			w.addTimerByRemaining(t, remaining)
 		}
@@ -262,7 +253,7 @@ func (w *Wheel) cascade(k int) {
 func (w *Wheel) addTimerByRemaining(t *timer, remaining time.Duration) bool {
 	for _, l := range w.levels {
 		if target, ok := l.addAfter(t, remaining); ok {
-			w.locations[t.id] = target
+			w.locations[t.ID] = target
 			return true
 		}
 	}
@@ -274,19 +265,19 @@ func (w *Wheel) applyScheduleCommand(cmd command) {
 	if t == nil {
 		return
 	}
-	if t.state.Load() != timerActive {
+	if t.State.Load() != timerActive {
 		return
 	}
 
-	if _, exists := w.timers[t.id]; exists {
+	if _, exists := w.timers[t.ID]; exists {
 		return
 	}
 
-	t.deadline = w.lastTime.Add(cmd.delay)
+	t.Deadline = w.lastTime.Add(cmd.delay)
 	if !w.addTimerByRemaining(t, cmd.delay) {
 		return
 	}
-	w.timers[t.id] = t
+	w.timers[t.ID] = t
 }
 
 func (w *Wheel) applyResetCommand(cmd command) {
@@ -294,19 +285,19 @@ func (w *Wheel) applyResetCommand(cmd command) {
 	if t == nil {
 		return
 	}
-	if t.state.Load() != timerActive {
+	if t.State.Load() != timerActive {
 		return
 	}
 
-	if loc, ok := w.locations[t.id]; ok {
-		loc.invalidate(t)
+	if loc, ok := w.locations[t.ID]; ok {
+		loc.Invalidate(t)
 	}
 
-	t.deadline = w.lastTime.Add(cmd.delay)
+	t.Deadline = w.lastTime.Add(cmd.delay)
 	if !w.addTimerByRemaining(t, cmd.delay) {
 		return
 	}
-	w.timers[t.id] = t
+	w.timers[t.ID] = t
 }
 
 func (w *Wheel) drainCommands() {
