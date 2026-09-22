@@ -9,6 +9,7 @@ import (
 var (
 	ErrInvalidParam    = errors.New("invalid param")
 	ErrUnsupportedSlot = errors.New("unsupported slot implementation")
+	ErrClosed          = errors.New("wheel is closed")
 )
 
 const DefaultCommandsCapacity = 65536
@@ -22,11 +23,19 @@ const (
 	SlotTypeLinkedList
 )
 
+type WheelState = uint32
+
+const (
+	WheelStateRunning WheelState = iota
+	WheelStateStopped
+)
+
 type Wheel struct {
 	baseTick     time.Duration
 	slotPerLevel int
 	levels       []*level
 	lastTime     time.Time
+	state        atomic.Uint32
 
 	nextTimerID atomic.Uint64
 	timers      map[timerID]*timer
@@ -91,6 +100,11 @@ func NewWheel(config WheelConfig) (*Wheel, error) {
 }
 
 func (w *Wheel) Schedule(delay time.Duration, callback Callback) (Handle, error) {
+
+	if w.state.Load() != WheelStateRunning {
+		return Handle{id: InvalidTimerID}, ErrClosed
+	}
+
 	if delay <= 0 || callback == nil || delay >= w.maxDelay {
 		return Handle{id: InvalidTimerID}, ErrInvalidParam
 	}
@@ -111,6 +125,9 @@ func (w *Wheel) Schedule(delay time.Duration, callback Callback) (Handle, error)
 }
 
 func (w *Wheel) Cancel(h Handle) bool {
+	if w.state.Load() != WheelStateRunning {
+		return false
+	}
 	if h.t == nil {
 		return false
 	}
@@ -119,6 +136,9 @@ func (w *Wheel) Cancel(h Handle) bool {
 }
 
 func (w *Wheel) Advance(now time.Time) int {
+	if w.state.Load() != WheelStateRunning {
+		return 0
+	}
 	w.drainCommands()
 
 	if !now.After(w.lastTime) {
@@ -137,6 +157,9 @@ func (w *Wheel) Advance(now time.Time) int {
 }
 
 func (w *Wheel) Reset(h Handle, newDelay time.Duration) bool {
+	if w.state.Load() != WheelStateRunning {
+		return false
+	}
 	if h.t == nil {
 		return false
 	}
@@ -153,6 +176,15 @@ func (w *Wheel) Reset(h Handle, newDelay time.Duration) bool {
 		delay: newDelay,
 	}
 	return true
+}
+
+func (w *Wheel) Close() {
+	if !w.state.CompareAndSwap(WheelStateRunning, WheelStateStopped) {
+		return
+	}
+	if w.workerPool != nil {
+		w.workerPool.Close()
+	}
 }
 
 func (w *Wheel) fireLowestLevelCurrentSlot() int {
