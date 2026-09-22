@@ -28,12 +28,17 @@ func newWheel(t *testing.T, tick time.Duration, slots int) *timerwheel.Wheel {
 }
 
 func newHierarchicalWheel(t *testing.T, baseTick, maxDelay time.Duration, slots int) *timerwheel.Wheel {
+	return newHierarchicalWheelWithSlotType(t, baseTick, maxDelay, slots, timerwheel.SlotTypeSlice)
+}
+
+func newHierarchicalWheelWithSlotType(t *testing.T, baseTick, maxDelay time.Duration, slots int, slotType timerwheel.SlotType) *timerwheel.Wheel {
 	t.Helper()
 
 	w, err := timerwheel.NewWheel(timerwheel.WheelConfig{
 		BaseTick:      baseTick,
 		MaxDelay:      maxDelay,
 		SlotsPerLevel: slots,
+		SlotType:      slotType,
 		StartTime:     time.Unix(0, 0),
 	})
 	if err != nil {
@@ -279,8 +284,318 @@ func TestWheelSlotTypeSelection(t *testing.T) {
 		MaxDelay:      100 * time.Millisecond,
 		SlotsPerLevel: 8,
 		SlotType:      timerwheel.SlotTypeLinkedList,
-	}); err != timerwheel.ErrUnsupportedSlot {
-		t.Fatalf("NewWheel(linked-list slot) error = %v, want %v", err, timerwheel.ErrUnsupportedSlot)
+	}); err != nil {
+		t.Fatalf("NewWheel(linked-list slot) error = %v, want nil", err)
+	}
+}
+
+func TestWheelWithLinkedListSlot(t *testing.T) {
+	start := time.Unix(0, 0)
+	w, err := timerwheel.NewWheel(timerwheel.WheelConfig{
+		BaseTick:      time.Millisecond,
+		MaxDelay:      100 * time.Millisecond,
+		SlotsPerLevel: 8,
+		SlotType:      timerwheel.SlotTypeLinkedList,
+		StartTime:     start,
+	})
+	if err != nil {
+		t.Fatalf("NewWheel(linked-list slot) error = %v", err)
+	}
+	defer w.Close()
+
+	var fired []string
+	mustSchedule(t, w, 3*time.Millisecond, func(time.Time) {
+		fired = append(fired, "short")
+	})
+	mustSchedule(t, w, 50*time.Millisecond, func(time.Time) {
+		fired = append(fired, "long")
+	})
+
+	if got := w.Advance(start.Add(3 * time.Millisecond)); got != 1 {
+		t.Fatalf("Advance(3ms) fired = %d, want 1", got)
+	}
+	if !equalStrings(fired, []string{"short"}) {
+		t.Fatalf("callbacks after 3ms = %v, want [short]", fired)
+	}
+
+	if got := w.Advance(start.Add(50 * time.Millisecond)); got != 1 {
+		t.Fatalf("Advance(50ms) fired = %d, want 1", got)
+	}
+	if !equalStrings(fired, []string{"short", "long"}) {
+		t.Fatalf("callbacks after 50ms = %v, want [short long]", fired)
+	}
+}
+
+func TestSlotImplementationsShareCoreWheelBehavior(t *testing.T) {
+	slotTypes := []struct {
+		name string
+		kind timerwheel.SlotType
+	}{
+		{name: "slice", kind: timerwheel.SlotTypeSlice},
+		{name: "linked-list", kind: timerwheel.SlotTypeLinkedList},
+	}
+
+	for _, tt := range slotTypes {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Run("schedule_and_fire", func(t *testing.T) {
+				start := time.Unix(0, 0)
+				w := newHierarchicalWheelWithSlotType(t, time.Millisecond, 100*time.Millisecond, 8, tt.kind)
+				defer w.Close()
+
+				var got []string
+				mustSchedule(t, w, 3*time.Millisecond, func(now time.Time) {
+					if !now.Equal(start.Add(3 * time.Millisecond)) {
+						t.Errorf("callback now = %v, want %v", now, start.Add(3*time.Millisecond))
+					}
+					got = append(got, "3ms")
+				})
+				mustSchedule(t, w, 50*time.Millisecond, func(time.Time) {
+					got = append(got, "50ms")
+				})
+
+				if fired := w.Advance(start.Add(50 * time.Millisecond)); fired != 2 {
+					t.Fatalf("Advance(50ms) fired = %d, want 2", fired)
+				}
+				if !equalStrings(got, []string{"3ms", "50ms"}) {
+					t.Fatalf("callbacks = %v, want [3ms 50ms]", got)
+				}
+			})
+
+			t.Run("cancel", func(t *testing.T) {
+				start := time.Unix(0, 0)
+				w := newHierarchicalWheelWithSlotType(t, time.Millisecond, 100*time.Millisecond, 8, tt.kind)
+				defer w.Close()
+
+				fired := false
+				h := mustSchedule(t, w, 50*time.Millisecond, func(time.Time) {
+					fired = true
+				})
+				if !w.Cancel(h) {
+					t.Fatal("Cancel() = false, want true")
+				}
+				if got := w.Advance(start.Add(100 * time.Millisecond)); got != 0 {
+					t.Fatalf("Advance(100ms) after cancel fired = %d, want 0", got)
+				}
+				if fired {
+					t.Fatal("canceled callback fired")
+				}
+			})
+
+			t.Run("reset", func(t *testing.T) {
+				start := time.Unix(0, 0)
+				w := newHierarchicalWheelWithSlotType(t, time.Millisecond, 100*time.Millisecond, 8, tt.kind)
+				defer w.Close()
+
+				var firedAt time.Time
+				h := mustSchedule(t, w, 50*time.Millisecond, func(now time.Time) {
+					firedAt = now
+				})
+				if !w.Reset(h, 7*time.Millisecond) {
+					t.Fatal("Reset() = false, want true")
+				}
+				if got := w.Advance(start.Add(7 * time.Millisecond)); got != 1 {
+					t.Fatalf("Advance(7ms) fired = %d, want 1", got)
+				}
+				if want := start.Add(7 * time.Millisecond); !firedAt.Equal(want) {
+					t.Fatalf("callback now = %v, want %v", firedAt, want)
+				}
+				if got := w.Advance(start.Add(50 * time.Millisecond)); got != 0 {
+					t.Fatalf("Advance(50ms) after reset fired = %d, want 0", got)
+				}
+			})
+
+			t.Run("rounds_non_integer_delay_up", func(t *testing.T) {
+				start := time.Unix(0, 0)
+				w := newHierarchicalWheelWithSlotType(t, time.Millisecond, 100*time.Millisecond, 8, tt.kind)
+				defer w.Close()
+
+				var firedAt time.Time
+				mustSchedule(t, w, 1500*time.Microsecond, func(now time.Time) {
+					firedAt = now
+				})
+				if got := w.Advance(start.Add(time.Millisecond)); got != 0 {
+					t.Fatalf("Advance(1ms) fired = %d, want 0", got)
+				}
+				if got := w.Advance(start.Add(2 * time.Millisecond)); got != 1 {
+					t.Fatalf("Advance(2ms) fired = %d, want 1", got)
+				}
+				if want := start.Add(2 * time.Millisecond); !firedAt.Equal(want) {
+					t.Fatalf("callback now = %v, want %v", firedAt, want)
+				}
+			})
+		})
+	}
+}
+
+func TestSlotImplementationsFireTimersInSameBucket(t *testing.T) {
+	slotTypes := []struct {
+		name string
+		kind timerwheel.SlotType
+	}{
+		{name: "slice", kind: timerwheel.SlotTypeSlice},
+		{name: "linked-list", kind: timerwheel.SlotTypeLinkedList},
+	}
+
+	for _, tt := range slotTypes {
+		t.Run(tt.name, func(t *testing.T) {
+			start := time.Unix(0, 0)
+			w := newHierarchicalWheelWithSlotType(t, time.Millisecond, 100*time.Millisecond, 8, tt.kind)
+			defer w.Close()
+
+			const total = 32
+			var fired atomic.Int32
+			for i := 0; i < total; i++ {
+				mustSchedule(t, w, 3*time.Millisecond, func(time.Time) {
+					fired.Add(1)
+				})
+			}
+
+			if got := w.Advance(start.Add(3 * time.Millisecond)); got != total {
+				t.Fatalf("Advance(3ms) fired = %d, want %d", got, total)
+			}
+			if got := fired.Load(); got != total {
+				t.Fatalf("callback count = %d, want %d", got, total)
+			}
+		})
+	}
+}
+
+func TestSlotImplementationsSupportRepeatedReset(t *testing.T) {
+	slotTypes := []struct {
+		name string
+		kind timerwheel.SlotType
+	}{
+		{name: "slice", kind: timerwheel.SlotTypeSlice},
+		{name: "linked-list", kind: timerwheel.SlotTypeLinkedList},
+	}
+
+	for _, tt := range slotTypes {
+		t.Run(tt.name, func(t *testing.T) {
+			start := time.Unix(0, 0)
+			w := newHierarchicalWheelWithSlotType(t, time.Millisecond, 100*time.Millisecond, 8, tt.kind)
+			defer w.Close()
+
+			var firedAt time.Time
+			h := mustSchedule(t, w, 50*time.Millisecond, func(now time.Time) {
+				firedAt = now
+			})
+
+			for _, delay := range []time.Duration{
+				20 * time.Millisecond,
+				7 * time.Millisecond,
+				31 * time.Millisecond,
+				11 * time.Millisecond,
+			} {
+				if !w.Reset(h, delay) {
+					t.Fatalf("Reset(%v) = false, want true", delay)
+				}
+			}
+
+			if got := w.Advance(start.Add(7 * time.Millisecond)); got != 0 {
+				t.Fatalf("Advance(7ms) fired = %d, want 0", got)
+			}
+			if got := w.Advance(start.Add(11 * time.Millisecond)); got != 1 {
+				t.Fatalf("Advance(11ms) fired = %d, want 1", got)
+			}
+			if want := start.Add(11 * time.Millisecond); !firedAt.Equal(want) {
+				t.Fatalf("callback now = %v, want %v", firedAt, want)
+			}
+			if got := w.Advance(start.Add(50 * time.Millisecond)); got != 0 {
+				t.Fatalf("Advance(50ms) after reset fired = %d, want 0", got)
+			}
+		})
+	}
+}
+
+func TestSlotImplementationsCascadeLongDelays(t *testing.T) {
+	slotTypes := []struct {
+		name string
+		kind timerwheel.SlotType
+	}{
+		{name: "slice", kind: timerwheel.SlotTypeSlice},
+		{name: "linked-list", kind: timerwheel.SlotTypeLinkedList},
+	}
+
+	for _, tt := range slotTypes {
+		t.Run(tt.name, func(t *testing.T) {
+			start := time.Unix(0, 0)
+			w := newHierarchicalWheelWithSlotType(t, time.Millisecond, 200*time.Millisecond, 8, tt.kind)
+			defer w.Close()
+
+			delays := []time.Duration{
+				15 * time.Millisecond,
+				63 * time.Millisecond,
+				71 * time.Millisecond,
+				129 * time.Millisecond,
+			}
+			fired := make(map[time.Duration]time.Time, len(delays))
+			for _, delay := range delays {
+				delay := delay
+				mustSchedule(t, w, delay, func(now time.Time) {
+					fired[delay] = now
+				})
+			}
+
+			if got := w.Advance(start.Add(129 * time.Millisecond)); got != len(delays) {
+				t.Fatalf("Advance(129ms) fired = %d, want %d", got, len(delays))
+			}
+			for _, delay := range delays {
+				if want := start.Add(delay); !fired[delay].Equal(want) {
+					t.Fatalf("delay %v callback now = %v, want %v", delay, fired[delay], want)
+				}
+			}
+		})
+	}
+}
+
+func TestSlotImplementationsSupportConcurrentSchedule(t *testing.T) {
+	slotTypes := []struct {
+		name string
+		kind timerwheel.SlotType
+	}{
+		{name: "slice", kind: timerwheel.SlotTypeSlice},
+		{name: "linked-list", kind: timerwheel.SlotTypeLinkedList},
+	}
+
+	for _, tt := range slotTypes {
+		t.Run(tt.name, func(t *testing.T) {
+			const (
+				producers   = 8
+				perProducer = 25
+				total       = producers * perProducer
+			)
+
+			start := time.Unix(0, 0)
+			w := newHierarchicalWheelWithSlotType(t, time.Millisecond, 100*time.Millisecond, 8, tt.kind)
+			defer w.Close()
+
+			var scheduled atomic.Int32
+			var wg sync.WaitGroup
+			wg.Add(producers)
+			for p := 0; p < producers; p++ {
+				go func(p int) {
+					defer wg.Done()
+					for i := 0; i < perProducer; i++ {
+						delay := time.Duration((p+i)%50+1) * time.Millisecond
+						_, err := w.Schedule(delay, func(time.Time) {
+							scheduled.Add(1)
+						})
+						if err != nil {
+							t.Errorf("Schedule(%v) error = %v", delay, err)
+							return
+						}
+					}
+				}(p)
+			}
+			wg.Wait()
+
+			if got := w.Advance(start.Add(100 * time.Millisecond)); got != total {
+				t.Fatalf("Advance(100ms) fired = %d, want %d", got, total)
+			}
+			if got := scheduled.Load(); got != total {
+				t.Fatalf("callback count = %d, want %d", got, total)
+			}
+		})
 	}
 }
 

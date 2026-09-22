@@ -52,7 +52,7 @@ func NewWheel(config WheelConfig) (*Wheel, error) {
 	if config.BaseTick <= 0 || config.MaxDelay <= 0 || config.SlotsPerLevel <= 0 {
 		return nil, ErrInvalidParam
 	}
-	if config.SlotType != SlotTypeSlice {
+	if !validateSlotType(config.SlotType) {
 		return nil, ErrUnsupportedSlot
 	}
 	commandCapacity := config.CommandCapacity
@@ -189,6 +189,10 @@ func (w *Wheel) Close() {
 	if w.workerPool != nil {
 		w.workerPool.Close()
 	}
+}
+
+func validateSlotType(slotType SlotType) bool {
+	return slotType == SlotTypeSlice || slotType == SlotTypeLinkedList
 }
 
 func (w *Wheel) fireLowestLevelCurrentSlot() int {

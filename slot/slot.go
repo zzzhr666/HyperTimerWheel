@@ -19,6 +19,8 @@ func New(kind Type) Slot {
 	switch kind {
 	case TypeSlice:
 		return &sliceSlot{}
+	case TypeLinkedList:
+		return newLinkedListSlot()
 	default:
 		return nil
 	}
