@@ -14,6 +14,7 @@ func newWheelForWorkerPoolTest(t *testing.T) *Wheel {
 		BaseTick:      time.Millisecond,
 		MaxDelay:      10 * time.Millisecond,
 		SlotsPerLevel: 8,
+		StartTime:     time.Unix(0, 0),
 	})
 	if err != nil {
 		t.Fatalf("NewWheel() error = %v", err)
@@ -48,7 +49,7 @@ func TestWheelWorkerPoolExecutesCallbacksAsync(t *testing.T) {
 		}
 	}
 
-	if fired := w.Advance(time.Time{}.Add(10 * time.Millisecond)); fired != total {
+	if fired := w.Advance(time.Unix(0, 0).Add(10 * time.Millisecond)); fired != total {
 		t.Fatalf("Advance(10ms) fired = %d, want %d", fired, total)
 	}
 
@@ -68,7 +69,7 @@ func TestWheelWorkerPoolPreservesFireTime(t *testing.T) {
 	}
 	w.workerPool = pool
 
-	start := time.Time{}
+	start := time.Unix(0, 0)
 
 	var mu sync.Mutex
 	got := make(map[string]time.Time)
@@ -142,7 +143,7 @@ func TestWheelWorkerPoolFallsBackInlineWhenQueueFull(t *testing.T) {
 		t.Fatalf("Schedule(1ms) error = %v", err)
 	}
 
-	if fired := w.Advance(time.Time{}.Add(time.Millisecond)); fired != 1 {
+	if fired := w.Advance(time.Unix(0, 0).Add(time.Millisecond)); fired != 1 {
 		t.Fatalf("Advance(1ms) fired = %d, want 1", fired)
 	}
 	if !ranInline {
@@ -182,7 +183,7 @@ func TestWheelWorkerPoolRespectsCancelBeforeAdvance(t *testing.T) {
 		}
 	}
 
-	if got := w.Advance(time.Time{}.Add(time.Millisecond)); got != total/2 {
+	if got := w.Advance(time.Unix(0, 0).Add(time.Millisecond)); got != total/2 {
 		t.Fatalf("Advance(1ms) fired = %d, want %d", got, total/2)
 	}
 

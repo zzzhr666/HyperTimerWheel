@@ -2,37 +2,72 @@ package timerwheel
 
 type slot interface {
 	add(t *timer)
-	remove(t *timer) bool
+	invalidate(t *timer) bool
 	takeAll() []*timer
 }
 
+func newSlot(kind SlotType) slot {
+	switch kind {
+	case SlotTypeSlice:
+		return &sliceSlot{}
+	default:
+		return nil
+	}
+}
+
+type sliceEntry struct {
+	timer *timer
+	gen   uint64
+}
+
 type sliceSlot struct {
-	timers []*timer
+	entries     []sliceEntry
+	generations map[*timer]uint64
 }
 
 func (s *sliceSlot) add(t *timer) {
-	s.timers = append(s.timers, t)
-}
-
-func (s *sliceSlot) remove(t *timer) bool {
-	for i, item := range s.timers {
-		if item != t {
-			continue
-		}
-
-		s.timers = append(s.timers[:i], s.timers[i+1:]...)
-		return true
+	if s.generations == nil {
+		s.generations = make(map[*timer]uint64)
 	}
 
-	return false
+	gen := s.generations[t]
+	s.generations[t] = gen
+
+	s.entries = append(s.entries, sliceEntry{
+		timer: t,
+		gen:   gen,
+	})
+}
+
+func (s *sliceSlot) invalidate(t *timer) bool {
+	if s.generations == nil {
+		return false
+	}
+
+	if _, ok := s.generations[t]; !ok {
+		return false
+	}
+
+	s.generations[t]++
+	return true
 }
 
 func (s *sliceSlot) takeAll() []*timer {
-	if len(s.timers) == 0 {
+	if len(s.entries) == 0 {
 		return nil
 	}
 
-	out := s.timers
-	s.timers = nil
+	out := make([]*timer, 0, len(s.entries))
+	for _, entry := range s.entries {
+		if entry.gen != s.generations[entry.timer] {
+			continue
+		}
+		out = append(out, entry.timer)
+	}
+
+	clear(s.entries)
+	s.entries = s.entries[:0]
+	clear(s.generations)
+
 	return out
 }

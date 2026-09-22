@@ -13,10 +13,12 @@ func newWheel(t *testing.T, tick time.Duration, slots int) *timerwheel.Wheel {
 	t.Helper()
 
 	maxDelay := tick * time.Duration(slots)
+	start := time.Unix(0, 0)
 	w, err := timerwheel.NewWheel(timerwheel.WheelConfig{
 		BaseTick:      tick,
 		MaxDelay:      maxDelay,
 		SlotsPerLevel: slots,
+		StartTime:     start,
 	})
 	if err != nil {
 		t.Fatalf("NewWheel(%v, %v, %d) error = %v", tick, maxDelay, slots, err)
@@ -32,6 +34,7 @@ func newHierarchicalWheel(t *testing.T, baseTick, maxDelay time.Duration, slots 
 		BaseTick:      baseTick,
 		MaxDelay:      maxDelay,
 		SlotsPerLevel: slots,
+		StartTime:     time.Unix(0, 0),
 	})
 	if err != nil {
 		t.Fatalf("NewWheel(%v, %v, %d) error = %v", baseTick, maxDelay, slots, err)
@@ -53,7 +56,7 @@ func mustSchedule(t *testing.T, w *timerwheel.Wheel, delay time.Duration, cb tim
 
 func TestSingleWheelFiresInDeadlineOrder(t *testing.T) {
 	w := newWheel(t, time.Millisecond, 8)
-	start := time.Time{}
+	start := time.Unix(0, 0)
 
 	var got []string
 	schedule := func(name string, delay time.Duration) {
@@ -93,7 +96,7 @@ func TestSingleWheelFiresInDeadlineOrder(t *testing.T) {
 
 func TestSingleWheelSameBucketFiresAll(t *testing.T) {
 	w := newWheel(t, time.Millisecond, 8)
-	start := time.Time{}
+	start := time.Unix(0, 0)
 
 	const count = 3
 	fired := make([]bool, count)
@@ -120,7 +123,7 @@ func TestSingleWheelSameBucketFiresAll(t *testing.T) {
 
 func TestSingleWheelCancel(t *testing.T) {
 	w := newWheel(t, time.Millisecond, 8)
-	start := time.Time{}
+	start := time.Unix(0, 0)
 
 	fired := false
 	h := mustSchedule(t, w, 2*time.Millisecond, func(time.Time) {
@@ -144,7 +147,7 @@ func TestSingleWheelCancel(t *testing.T) {
 
 func TestSingleWheelAdvanceSkipsTicks(t *testing.T) {
 	w := newWheel(t, time.Millisecond, 8)
-	start := time.Time{}
+	start := time.Unix(0, 0)
 
 	var got []string
 	mustSchedule(t, w, 2*time.Millisecond, func(time.Time) {
@@ -193,7 +196,7 @@ func TestHierarchicalWheelLongDelaysFireAtBasePrecision(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			w := newHierarchicalWheel(t, baseTick, maxDelay, slots)
-			start := time.Time{}
+			start := time.Unix(0, 0)
 
 			var got time.Time
 			mustSchedule(t, w, tt.delay, func(now time.Time) {
@@ -213,7 +216,7 @@ func TestHierarchicalWheelLongDelaysFireAtBasePrecision(t *testing.T) {
 
 func TestHierarchicalWheelNonIntegerDelayRoundsUpToNextTick(t *testing.T) {
 	w := newHierarchicalWheel(t, time.Millisecond, 20*time.Millisecond, 8)
-	start := time.Time{}
+	start := time.Unix(0, 0)
 
 	var got time.Time
 	mustSchedule(t, w, 1500*time.Microsecond, func(now time.Time) {
@@ -234,7 +237,7 @@ func TestHierarchicalWheelNonIntegerDelayRoundsUpToNextTick(t *testing.T) {
 
 func TestHierarchicalWheelCancelAcrossLevels(t *testing.T) {
 	w := newHierarchicalWheel(t, time.Millisecond, 100*time.Millisecond, 8)
-	start := time.Time{}
+	start := time.Unix(0, 0)
 
 	fired := false
 	h := mustSchedule(t, w, 50*time.Millisecond, func(time.Time) {
@@ -261,6 +264,26 @@ func TestHierarchicalWheelRejectsDelayAtMaxDelay(t *testing.T) {
 	}
 }
 
+func TestWheelSlotTypeSelection(t *testing.T) {
+	if _, err := timerwheel.NewWheel(timerwheel.WheelConfig{
+		BaseTick:      time.Millisecond,
+		MaxDelay:      100 * time.Millisecond,
+		SlotsPerLevel: 8,
+		SlotType:      timerwheel.SlotTypeSlice,
+	}); err != nil {
+		t.Fatalf("NewWheel(slice slot) error = %v", err)
+	}
+
+	if _, err := timerwheel.NewWheel(timerwheel.WheelConfig{
+		BaseTick:      time.Millisecond,
+		MaxDelay:      100 * time.Millisecond,
+		SlotsPerLevel: 8,
+		SlotType:      timerwheel.SlotTypeLinkedList,
+	}); err != timerwheel.ErrUnsupportedSlot {
+		t.Fatalf("NewWheel(linked-list slot) error = %v, want %v", err, timerwheel.ErrUnsupportedSlot)
+	}
+}
+
 func TestConcurrentScheduleAndAdvance(t *testing.T) {
 	const (
 		producers   = 32
@@ -269,7 +292,7 @@ func TestConcurrentScheduleAndAdvance(t *testing.T) {
 	)
 
 	w := newHierarchicalWheel(t, time.Millisecond, 100*time.Millisecond, 8)
-	start := time.Time{}
+	start := time.Unix(0, 0)
 
 	var fired atomic.Int32
 	var wg sync.WaitGroup
@@ -306,7 +329,7 @@ func TestConcurrentCancelAndAdvance(t *testing.T) {
 	const total = 2000
 
 	w := newHierarchicalWheel(t, time.Millisecond, 10*time.Millisecond, 8)
-	start := time.Time{}
+	start := time.Unix(0, 0)
 	handles := make([]timerwheel.Handle, total)
 
 	var fired atomic.Int32
