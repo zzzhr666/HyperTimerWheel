@@ -7,9 +7,10 @@ import (
 )
 
 var (
-	ErrInvalidParam    = errors.New("invalid param")
-	ErrUnsupportedSlot = errors.New("unsupported slot implementation")
-	ErrClosed          = errors.New("wheel is closed")
+	ErrInvalidParam     = errors.New("invalid param")
+	ErrUnsupportedSlot  = errors.New("unsupported slot implementation")
+	ErrClosed           = errors.New("wheel is closed")
+	ErrCommandQueueFull = errors.New("command queue is full")
 )
 
 const DefaultCommandsCapacity = 65536
@@ -52,6 +53,7 @@ type WheelConfig struct {
 	SlotsPerLevel    int
 	SlotType         SlotType
 	StartTime        time.Time
+	CommandCapacity  int
 	WorkerPoolConfig WorkerPoolConfig
 }
 
@@ -61,6 +63,10 @@ func NewWheel(config WheelConfig) (*Wheel, error) {
 	}
 	if config.SlotType != SlotTypeSlice {
 		return nil, ErrUnsupportedSlot
+	}
+	commandCapacity := config.CommandCapacity
+	if commandCapacity <= 0 {
+		commandCapacity = DefaultCommandsCapacity
 	}
 
 	startTime := config.StartTime
@@ -75,7 +81,7 @@ func NewWheel(config WheelConfig) (*Wheel, error) {
 		timers:       make(map[timerID]*timer),
 		locations:    make(map[timerID]slot),
 		maxDelay:     config.MaxDelay,
-		commands:     make(chan command, DefaultCommandsCapacity),
+		commands:     make(chan command, commandCapacity),
 		workerPool:   NewWorkerPool(config.WorkerPoolConfig),
 	}
 	w.nextTimerID.Store(1)
@@ -100,7 +106,6 @@ func NewWheel(config WheelConfig) (*Wheel, error) {
 }
 
 func (w *Wheel) Schedule(delay time.Duration, callback Callback) (Handle, error) {
-
 	if w.state.Load() != WheelStateRunning {
 		return Handle{id: InvalidTimerID}, ErrClosed
 	}
@@ -115,13 +120,16 @@ func (w *Wheel) Schedule(delay time.Duration, callback Callback) (Handle, error)
 		cb: callback,
 	}
 
-	w.commands <- command{
+	select {
+	case w.commands <- command{
 		kind:  CmdSchedule,
 		t:     t,
 		delay: delay,
+	}:
+		return Handle{id: t.id, t: t}, nil
+	default:
+		return Handle{id: InvalidTimerID}, ErrCommandQueueFull
 	}
-
-	return Handle{id: t.id, t: t}, nil
 }
 
 func (w *Wheel) Cancel(h Handle) bool {
@@ -170,18 +178,23 @@ func (w *Wheel) Reset(h Handle, newDelay time.Duration) bool {
 		return false
 	}
 
-	w.commands <- command{
+	select {
+	case w.commands <- command{
 		kind:  CmdReset,
 		t:     h.t,
 		delay: newDelay,
+	}:
+		return true
+	default:
+		return false
 	}
-	return true
 }
 
 func (w *Wheel) Close() {
 	if !w.state.CompareAndSwap(WheelStateRunning, WheelStateStopped) {
 		return
 	}
+
 	if w.workerPool != nil {
 		w.workerPool.Close()
 	}
