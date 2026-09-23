@@ -3,6 +3,7 @@ package timerwheel
 import timermodel "HyperTimerWheel/timer"
 
 type Callback = timermodel.Callback
+type ID = timermodel.ID
 type timerID = timermodel.ID
 type timer = timermodel.Timer
 

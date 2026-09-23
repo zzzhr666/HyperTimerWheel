@@ -34,18 +34,20 @@ type Wheel struct {
 	locations   map[timerID]slot
 	maxDelay    time.Duration
 
-	commands   chan command
-	workerPool *WorkerPool
+	commands             chan command
+	workerPool           *WorkerPool
+	callbackPanicHandler CallbackPanicHandler
 }
 
 type WheelConfig struct {
-	BaseTick         time.Duration
-	MaxDelay         time.Duration
-	SlotsPerLevel    int
-	SlotType         SlotType
-	StartTime        time.Time
-	CommandCapacity  int
-	WorkerPoolConfig WorkerPoolConfig
+	BaseTick             time.Duration
+	MaxDelay             time.Duration
+	SlotsPerLevel        int
+	SlotType             SlotType
+	StartTime            time.Time
+	CommandCapacity      int
+	WorkerPoolConfig     WorkerPoolConfig
+	CallbackPanicHandler CallbackPanicHandler
 }
 
 func NewWheel(config WheelConfig) (*Wheel, error) {
@@ -66,14 +68,15 @@ func NewWheel(config WheelConfig) (*Wheel, error) {
 	}
 
 	w := &Wheel{
-		baseTick:     config.BaseTick,
-		slotPerLevel: config.SlotsPerLevel,
-		lastTime:     startTime,
-		timers:       make(map[timerID]*timer),
-		locations:    make(map[timerID]slot),
-		maxDelay:     config.MaxDelay,
-		commands:     make(chan command, commandCapacity),
-		workerPool:   NewWorkerPool(config.WorkerPoolConfig),
+		baseTick:             config.BaseTick,
+		slotPerLevel:         config.SlotsPerLevel,
+		lastTime:             startTime,
+		timers:               make(map[timerID]*timer),
+		locations:            make(map[timerID]slot),
+		maxDelay:             config.MaxDelay,
+		commands:             make(chan command, commandCapacity),
+		workerPool:           NewWorkerPool(config.WorkerPoolConfig),
+		callbackPanicHandler: config.CallbackPanicHandler,
 	}
 	w.nextTimerID.Store(1)
 
@@ -211,7 +214,7 @@ func (w *Wheel) fireLowestLevelCurrentSlot() int {
 		delete(w.locations, t.ID)
 
 		task := func() {
-			t.Callback(now)
+			w.executeCallback(t, now)
 		}
 		if w.workerPool == nil || !w.workerPool.Submit(task) {
 			task()
